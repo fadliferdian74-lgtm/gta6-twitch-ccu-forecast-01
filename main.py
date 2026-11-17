@@ -10,13 +10,23 @@ Model (fitted at runtime from the case's own comparables pool):
     describe how a launch day starts: the log of hour-1 viewers, the log
     ratio of the pre-day peak (max viewers in the 24 h before the day)
     to hour 1, and the log ratio of the last pre-day hour to hour 1.
-    A rolling-midnight console launch has a high pre-day ramp (the game
-    is already out in earlier time zones), a front-loaded global unlock
-    does not, and the kernel keeps those families apart.
+    The pre-day peak axis is deliberately soft (wide bandwidth): a big
+    pre-day audience says a first regional wave or an early-access crowd
+    was already there, but which of those it was matters more than the
+    peak's exact size, and leave-one-out backtests punish a tight fit
+    on it. The hour-1 size and the last pre-day hour carry the signal.
   * Each hour's five quantiles are the weighted empirical quantiles of
-    the pool's log ratios at that hour, scaled back by the case's own
-    hour-1 print. Weighted quantiles are non-decreasing in the level by
-    construction, so every row is valid as written.
+    the pool's log ratios at that hour, pooled with the two neighbouring
+    hours (a launch day's shape is smooth, and pooling triples the
+    effective sample behind every quantile), scaled back by the case's
+    own hour-1 print.
+  * The fan is then calibrated against the pool itself: leave-one-out
+    forecasts inside the pool measure, per day-part (early, middle,
+    late), how often each nominal level actually covered and how far
+    the median ran from the outcome. The levels are nudged halfway
+    toward the levels that would have covered correctly, and each
+    day-part is shifted by its measured median bias. On the pool this
+    corrects a small systematic underforecast that grows over the day.
 
 The design was chosen by leave-one-out backtests over the comparables
 pool and by end-to-end runs on the four practice cases, where it scores
@@ -33,7 +43,16 @@ LEVELS = (0.05, 0.25, 0.5, 0.75, 0.95)
 
 # Gaussian kernel bandwidths per feature, picked on leave-one-out
 # backtests and frozen: (feature name, bandwidth in log units).
-KERNEL = (("logy1", 1.2), ("premax", 0.6), ("prelast", 0.5))
+KERNEL = (("logy1", 1.0), ("premax", 1.8), ("prelast", 0.5))
+
+# Day-parts for the calibration step: (first hour, last hour).
+BLOCKS = ((2, 8), (9, 16), (17, 24))
+# Coverage levels at which the calibration measures the pool's fan.
+CAL_GRID = (0.03, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
+            0.60, 0.70, 0.80, 0.90, 0.95, 0.97)
+CAL_LEVEL_SHRINK = 0.5    # move nominal levels halfway to calibrated ones
+CAL_SHIFT_CLAMP = 0.3     # cap on a day-part's median-bias shift, log units
+CAL_MIN_POOL = 8          # below this the pool cannot calibrate itself
 
 # Normal quantiles at LEVELS, only for the no-pool fallback below.
 Z = (-1.6448536269514722, -0.6744897501960817, 0.0,
@@ -118,7 +137,11 @@ def kernel_weight(target_feats, comp_feats):
 
 def weighted_quantile(pairs, tau):
     """Smallest value whose cumulative weight reaches tau of the total."""
-    ordered = sorted(pairs)
+    return weighted_quantile_sorted(sorted(pairs), tau)
+
+
+def weighted_quantile_sorted(ordered, tau):
+    """weighted_quantile for pairs already sorted by value."""
     total = sum(w for _, w in ordered)
     if total <= 0:
         return ordered[len(ordered) // 2][0]
@@ -128,6 +151,78 @@ def weighted_quantile(pairs, tau):
         if acc >= tau * total:
             return value
     return ordered[-1][0]
+
+
+def hour_pairs(pool, target_feats, hour):
+    """(log ratio, weight) pairs for one hour, neighbours pooled in.
+
+    pool holds (ratios, feats) entries; the weight is the kernel weight
+    of the entry against the target, shared by the hour and its two
+    neighbours.
+    """
+    pairs = []
+    for ratios, cfeats in pool:
+        w = kernel_weight(target_feats, cfeats)
+        for hh in range(max(2, hour - 1), min(24, hour + 1) + 1):
+            pairs.append((ratios[hh - 2], w))
+    return pairs
+
+
+def block_index(hour):
+    for bi, (first, last) in enumerate(BLOCKS):
+        if first <= hour <= last:
+            return bi
+    return len(BLOCKS) - 1
+
+
+def fit_calibration(pool):
+    """Per-day-part level adjustments and median shifts for the fan.
+
+    Runs leave-one-out forecasts inside the pool: every launch is
+    forecast from the others, and per day-part we record how often each
+    grid level covered the outcome and how far the median missed. The
+    returned adjustments map each nominal level to the level whose
+    measured coverage matches it (shrunk halfway back to nominal), and
+    each day-part to its median bias, clamped.
+    """
+    n_blocks = len(BLOCKS)
+    cover = [[[] for _ in CAL_GRID] for _ in range(n_blocks)]
+    resid = [[] for _ in range(n_blocks)]
+    for j, (ratios_j, feats_j) in enumerate(pool):
+        rest = pool[:j] + pool[j + 1:]
+        for hi, hour in enumerate(range(2, 25)):
+            bi = block_index(hour)
+            pairs = sorted(hour_pairs(rest, feats_j, hour))
+            r = ratios_j[hi]
+            for gi, g in enumerate(CAL_GRID):
+                cover[bi][gi].append(
+                    1.0 if r <= weighted_quantile_sorted(pairs, g) else 0.0)
+            resid[bi].append(r - weighted_quantile_sorted(pairs, 0.5))
+    adj = []
+    for bi in range(n_blocks):
+        curve = []
+        for gi, g in enumerate(CAL_GRID):
+            vals = cover[bi][gi]
+            curve.append((sum(vals) / len(vals) if vals else g, g))
+        row = []
+        for tau in LEVELS:
+            gstar = None
+            for (c0, g0), (c1, g1) in zip(curve, curve[1:]):
+                if (c0 - tau) * (c1 - tau) <= 0 and c1 != c0:
+                    gstar = g0 + (tau - c0) * (g1 - g0) / (c1 - c0)
+                    break
+            if gstar is None:
+                gstar = min(curve, key=lambda cg: abs(cg[0] - tau))[1]
+            a = tau + CAL_LEVEL_SHRINK * (gstar - tau)
+            row.append(min(0.98, max(0.02, a)))
+        row.sort()
+        adj.append(row)
+    shift = []
+    for bi in range(n_blocks):
+        rs = sorted(resid[bi])
+        med = rs[len(rs) // 2] if rs else 0.0
+        shift.append(max(-CAL_SHIFT_CLAMP, min(CAL_SHIFT_CLAMP, med)))
+    return adj, shift
 
 
 def target_features(case):
@@ -160,17 +255,23 @@ def forecast(case):
     for comp in case.get("comparables") or []:
         shape = launch_shape(comp)
         if shape is not None:
-            ratios, cfeats = shape
-            pool.append((ratios, kernel_weight(tfeats, cfeats)))
+            pool.append(shape)
+    if len(pool) >= CAL_MIN_POOL:
+        adj, shift = fit_calibration(pool)
+    else:
+        adj = [list(LEVELS) for _ in BLOCKS]
+        shift = [0.0] * len(BLOCKS)
     rows = []
     for hour in range(2, 25):
         if pool:
-            pairs = [(ratios[hour - 2], w) for ratios, w in pool]
-            qs = [y1 * math.exp(weighted_quantile(pairs, tau)) for tau in LEVELS]
+            bi = block_index(hour)
+            pairs = hour_pairs(pool, tfeats, hour)
+            qs = [y1 * math.exp(weighted_quantile(pairs, adj[bi][li]) + shift[bi])
+                  for li in range(len(LEVELS))]
         else:
             qs = baseline_row(y1, hour)
-        # Weighted quantiles are already non-decreasing in tau; enforce
-        # it anyway and clamp to the allowed range (0, 1e9].
+        # Weighted quantiles are non-decreasing in the level by
+        # construction; enforce it anyway and clamp to (0, 1e9].
         row = []
         prev = 0.0
         for q in qs:
