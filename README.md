@@ -4,9 +4,9 @@ Forecasts the hourly Twitch viewer counts of Grand Theft Auto VI's
 release day (2026-11-19, UTC) for hours 2-24, as five quantiles per
 hour, given everything recorded up to the end of hour 1.
 
-![competition](https://make.fun/badge/gta6-twitch-ccu-forecast-01.svg)
-![rank](https://make.fun/badge/gta6-twitch-ccu-forecast-01/fadliferdian74-lgtm/gta6-twitch-ccu-forecast-01/rank.svg)
-![reward](https://make.fun/badge/gta6-twitch-ccu-forecast-01/fadliferdian74-lgtm/gta6-twitch-ccu-forecast-01/reward.svg)
+[![make.fun · gta6-twitch-ccu-forecast-01](https://make.fun/badge/gta6-twitch-ccu-forecast-01.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
+[![rank](https://make.fun/badge/gta6-twitch-ccu-forecast-01/fadliferdian74-lgtm/gta6-twitch-ccu-forecast-01/rank.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
+[![reward](https://make.fun/badge/gta6-twitch-ccu-forecast-01/fadliferdian74-lgtm/gta6-twitch-ccu-forecast-01/reward.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
 
 ## How it works
 
