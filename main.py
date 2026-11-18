@@ -27,6 +27,9 @@ Model (fitted at runtime from the case's own comparables pool):
     toward the levels that would have covered correctly, and each
     day-part is shifted by its measured median bias. On the pool this
     corrects a small systematic underforecast that grows over the day.
+    After calibration, the fan's log-spread is contracted 15% toward
+    its own median, because leave-one-out backtests over the pool and
+    the practice cases both showed the calibrated fan runs slightly wide.
 
 The design was chosen by leave-one-out backtests over the comparables
 pool and by end-to-end runs on the four practice cases, where it scores
@@ -53,6 +56,7 @@ CAL_GRID = (0.03, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
 CAL_LEVEL_SHRINK = 0.5    # move nominal levels halfway to calibrated ones
 CAL_SHIFT_CLAMP = 0.3     # cap on a day-part's median-bias shift, log units
 CAL_MIN_POOL = 8          # below this the pool cannot calibrate itself
+FAN_SHRINK = 0.85         # contract the fan's log-spread around its median
 
 # Normal quantiles at LEVELS, only for the no-pool fallback below.
 Z = (-1.6448536269514722, -0.6744897501960817, 0.0,
@@ -266,8 +270,11 @@ def forecast(case):
         if pool:
             bi = block_index(hour)
             pairs = hour_pairs(pool, tfeats, hour)
-            qs = [y1 * math.exp(weighted_quantile(pairs, adj[bi][li]) + shift[bi])
+            lq = [weighted_quantile(pairs, adj[bi][li]) + shift[bi]
                   for li in range(len(LEVELS))]
+            med = lq[2]
+            lq = [med + FAN_SHRINK * (v - med) for v in lq]
+            qs = [y1 * math.exp(v) for v in lq]
         else:
             qs = baseline_row(y1, hour)
         # Weighted quantiles are non-decreasing in the level by
